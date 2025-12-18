@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: whatsapp-chat
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Note: Set SESSION_SECRET and ALLOWED_ORIGINS in Render dashboard
+      # SESSION_SECRET: Generate with: openssl rand -base64 32
+      # ALLOWED_ORIGINS: https://your-app.onrender.com
+    healthCheckPath: /
+    plan: free
+

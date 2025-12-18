@@ -1,0 +1,33 @@
+{
+  "name": "whatsapp-chat-app",
+  "version": "1.0.0",
+  "description": "Real-time WhatsApp-like chat application with session-based storage",
+  "main": "index.js",
+  "scripts": {
+    "start": "node chat-backend/server.js",
+    "dev": "nodemon chat-backend/server.js",
+    "mobile": "cd chat-mobile && npm start",
+    "mobile:android": "cd chat-mobile && npm run android",
+    "mobile:ios": "cd chat-mobile && npm run ios",
+    "mobile:web": "cd chat-mobile && npm run web",
+    "install:all": "npm install && cd chat-mobile && npm install"
+  },
+  "keywords": [
+    "chat",
+    "whatsapp",
+    "socket.io",
+    "real-time",
+    "react-native",
+    "expo"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "socket.io": "^4.8.1",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
+}
