@@ -94,8 +94,20 @@ const io = new Server(server, {
   },
 });
 
+// Track active users
+let activeUsers = 0;
+
+// Function to broadcast active user count
+function broadcastActiveUsers() {
+  io.emit("active_users", activeUsers);
+}
+
 io.on("connection", (socket) => {
-  console.log("✅ User connected:", socket.id);
+  activeUsers++;
+  console.log(`✅ User connected: ${socket.id} (Total: ${activeUsers})`);
+  
+  // Send active user count to all clients
+  broadcastActiveUsers();
 
   // Send message history on connect
   socket.emit("message_history", messages);
@@ -114,7 +126,7 @@ io.on("connection", (socket) => {
       const message = {
         id: msg.id || `${Date.now()}-${Math.random().toString(36).substring(2, 10)}`,
         text: sanitizedText,
-        sender: "Unknown", // Always anonymous
+        sender: msg.senderName || "Unknown", // Use sender name from client
         time: new Date().toLocaleTimeString([], {
           hour: "2-digit",
           minute: "2-digit",
@@ -146,7 +158,9 @@ io.on("connection", (socket) => {
 
   // Handle disconnection
   socket.on("disconnect", () => {
-    console.log("❌ User disconnected:", socket.id);
+    activeUsers = Math.max(0, activeUsers - 1);
+    console.log(`❌ User disconnected: ${socket.id} (Total: ${activeUsers})`);
+    broadcastActiveUsers();
   });
 });
 

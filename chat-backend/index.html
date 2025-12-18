@@ -51,6 +51,9 @@
       flex-shrink: 0;
       position: relative;
       z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
     }
 
     .chat-header h1 {
@@ -60,6 +63,12 @@
 
     .chat-header p {
       display: none;
+    }
+
+    .active-users {
+      font-size: 12px;
+      opacity: 0.9;
+      font-weight: 400;
     }
 
     .messages-container {
@@ -122,6 +131,14 @@
       opacity: 0.6;
       text-align: right;
       margin-top: 2px;
+    }
+
+    .message-sender {
+      font-size: 11px;
+      opacity: 0.8;
+      text-align: right;
+      margin-top: 2px;
+      font-weight: 500;
     }
 
     .input-container {
@@ -237,6 +254,10 @@
         font-size: 16px;
       }
 
+      .active-users {
+        font-size: 11px;
+      }
+
       .messages-container {
         padding: 10px;
         gap: 6px;
@@ -292,7 +313,7 @@
   <div class="chat-container">
     <div class="chat-header">
       <h1>💬 Anonymous Chat</h1>
-      <p>Send messages anonymously • No registration required</p>
+      <div class="active-users" id="activeUsers">Loading...</div>
     </div>
     
     <div class="status" id="status">Connecting...</div>
@@ -314,9 +335,38 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    // Indian names list (100+ names)
+    const indianNames = [
+      "Arjun", "Priya", "Rohan", "Ananya", "Karan", "Sneha", "Vikram", "Kavya", "Rahul", "Divya",
+      "Aditya", "Meera", "Siddharth", "Isha", "Aryan", "Pooja", "Krishna", "Anjali", "Ravi", "Neha",
+      "Vishal", "Shreya", "Amit", "Riya", "Raj", "Sakshi", "Nikhil", "Tanvi", "Sahil", "Aishwarya",
+      "Rohit", "Kritika", "Varun", "Aditi", "Akash", "Swati", "Harsh", "Pallavi", "Yash", "Nisha",
+      "Manish", "Deepika", "Gaurav", "Shruti", "Abhishek", "Ankita", "Suresh", "Jyoti", "Prateek", "Richa",
+      "Kunal", "Monika", "Ankit", "Sonal", "Vivek", "Preeti", "Rishabh", "Kiran", "Mohit", "Radha",
+      "Sachin", "Vidya", "Naveen", "Lakshmi", "Dinesh", "Geeta", "Pankaj", "Sarika", "Aman", "Madhuri",
+      "Ritesh", "Sunita", "Nitin", "Poonam", "Sandeep", "Rekha", "Ashish", "Manju", "Deepak", "Suman",
+      "Vijay", "Kamala", "Sanjay", "Uma", "Ajay", "Leela", "Manoj", "Padma", "Sunil", "Indira",
+      "Rajesh", "Lata", "Mahesh", "Sita", "Vinod", "Ganga", "Bharat", "Saraswati", "Gopal", "Durga",
+      "Shyam", "Parvati", "Ram", "Lakshmi", "Krishna", "Radha", "Shiva", "Kali", "Vishnu", "Saraswati",
+      "Ganesh", "Lakshmi", "Hanuman", "Durga", "Brahma", "Parvati", "Indra", "Sita", "Yama", "Ganga"
+    ];
+
+    // Get or generate user name from localStorage
+    function getUserName() {
+      let userName = localStorage.getItem("chatUserName");
+      if (!userName) {
+        // Generate random Indian name
+        userName = indianNames[Math.floor(Math.random() * indianNames.length)];
+        localStorage.setItem("chatUserName", userName);
+      }
+      return userName;
+    }
+
     let socket = null;
     let isConnected = false;
     let messageCount = 0;
+    let activeUsersCount = 0;
+    const myUserName = getUserName();
 
     // Initialize socket connection
     function initializeSocket() {
@@ -366,6 +416,18 @@
         addMessageToUI(msg, true);
         scrollToBottom();
       });
+
+      socket.on("active_users", (count) => {
+        activeUsersCount = count;
+        updateActiveUsersDisplay();
+      });
+    }
+
+    function updateActiveUsersDisplay() {
+      const activeUsersEl = document.getElementById("activeUsers");
+      if (activeUsersEl) {
+        activeUsersEl.textContent = `${activeUsersCount} ${activeUsersCount === 1 ? 'user' : 'users'} online`;
+      }
     }
 
     function updateStatus(text, className) {
@@ -390,6 +452,7 @@
       const message = {
         id: `${Date.now()}-${Math.random().toString(36).substring(2, 10)}`,
         text: text,
+        senderName: myUserName, // Send user's name
       };
 
       socket.emit("send_message", message);
@@ -401,16 +464,17 @@
       const container = document.getElementById("messagesContainer");
       const messageDiv = document.createElement("div");
       
-      // Alternate message alignment for visual variety
-      const isOwn = messageCount % 2 === 0;
+      // Check if message is from current user
+      const isOwn = msg.sender === myUserName;
       messageCount++;
       
       messageDiv.className = `message ${isOwn ? "own" : "other"}`;
-      messageDiv.style.animation = animate ? "slideIn 0.3s ease-out" : "none";
+      messageDiv.style.animation = animate ? "slideIn 0.2s ease-out" : "none";
 
       messageDiv.innerHTML = `
         <div class="message-text">${escapeHtml(msg.text)}</div>
         <div class="message-time">${msg.date} • ${msg.time}</div>
+        <div class="message-sender">${escapeHtml(msg.sender)}</div>
       `;
 
       container.appendChild(messageDiv);
