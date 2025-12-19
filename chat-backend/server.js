@@ -75,6 +75,44 @@ async function loadMessagesFromSupabase() {
 // Store messages in memory for quick access
 let messages = [];
 
+// Batch messages for periodic saving
+let messageBatch = [];
+const BATCH_SAVE_INTERVAL = 4 * 60 * 1000 + 58 * 1000; // 4 minutes 58 seconds in milliseconds
+
+// Save batch to Supabase
+async function saveBatchToSupabase() {
+  if (messageBatch.length === 0) {
+    return;
+  }
+
+  try {
+    const batchToSave = [...messageBatch];
+    messageBatch = []; // Clear batch
+
+    const { data, error } = await supabase
+      .from("messages")
+      .insert(batchToSave.map(msg => ({
+        text: msg.text,
+        sender: msg.sender,
+      })));
+
+    if (error) {
+      throw error;
+    }
+
+    console.log(`💾 Saved ${batchToSave.length} messages to Supabase`);
+  } catch (error) {
+    console.error("❌ Error saving batch to Supabase:", error);
+    // Re-add messages to batch if save failed
+    messageBatch = [...messageBatch, ...batchToSave];
+  }
+}
+
+// Auto-save batch every 4 minutes 58 seconds
+setInterval(async () => {
+  await saveBatchToSupabase();
+}, BATCH_SAVE_INTERVAL);
+
 // Load messages on startup
 (async () => {
   messages = await loadMessagesFromSupabase();
@@ -137,35 +175,31 @@ io.on("connection", (socket) => {
       // Sanitize message (remove excessive whitespace, limit length)
       const sanitizedText = msg.text.trim().substring(0, 2000); // Max 2000 chars
       const senderName = msg.senderName || "Unknown";
+      const now = new Date();
 
-      // Insert message into Supabase
-      const { data, error } = await supabase
-        .from("messages")
-        .insert([
-          {
-            text: sanitizedText,
-            sender: senderName,
-          },
-        ])
-        .select()
-        .single();
+      // Generate temporary ID (will be replaced when saved to database)
+      const tempId = msg.id || `${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
 
-      if (error) {
-        throw error;
-      }
-
-      // Format message for client
+      // Format message for client (sent immediately in real-time)
       const message = {
-        id: data.id,
-        text: data.text,
-        sender: data.sender,
-        date: new Date(data.created_at).toLocaleDateString(),
-        time: new Date(data.created_at).toLocaleTimeString([], {
+        id: tempId,
+        text: sanitizedText,
+        sender: senderName,
+        date: now.toLocaleDateString(),
+        time: now.toLocaleTimeString([], {
           hour: "2-digit",
           minute: "2-digit",
         }),
-        timestamp: new Date(data.created_at).getTime(),
+        timestamp: now.getTime(),
       };
+
+      // Add to batch for periodic saving (every 4 min 58 sec)
+      messageBatch.push({
+        text: sanitizedText,
+        sender: senderName,
+        tempId: tempId,
+        timestamp: now,
+      });
 
       // Add to in-memory cache
       messages.push(message);
@@ -175,10 +209,10 @@ io.on("connection", (socket) => {
         messages = messages.slice(-MAX_MESSAGES);
       }
 
-      // Broadcast to all connected clients
+      // Broadcast to all connected clients immediately (real-time)
       io.emit("receive_message", message);
       
-      console.log(`📨 New message from ${senderName}: ${sanitizedText.substring(0, 50)}...`);
+      console.log(`📨 New message from ${senderName}: ${sanitizedText.substring(0, 50)}... (queued for batch save)`);
     } catch (error) {
       console.error("Error handling message:", error);
       socket.emit("error", { message: "Failed to send message" });
@@ -202,14 +236,16 @@ process.on("unhandledRejection", (reason, promise) => {
   console.error("Unhandled Rejection at:", promise, "reason:", reason);
 });
 
-// Graceful shutdown
+// Graceful shutdown - save any pending messages
 process.on("SIGTERM", async () => {
-  console.log("SIGTERM received, shutting down...");
+  console.log("SIGTERM received, saving pending messages...");
+  await saveBatchToSupabase();
   process.exit(0);
 });
 
 process.on("SIGINT", async () => {
-  console.log("SIGINT received, shutting down...");
+  console.log("SIGINT received, saving pending messages...");
+  await saveBatchToSupabase();
   process.exit(0);
 });
 
@@ -218,6 +254,7 @@ server.listen(PORT, async () => {
   console.log(`📱 Environment: ${NODE_ENV}`);
   console.log(`💾 Database: Supabase`);
   console.log(`🔗 Supabase URL: ${SUPABASE_URL.substring(0, 30)}...`);
+  console.log(`⏰ Batch save interval: Every 4 minutes 58 seconds`);
   
   // Load messages on startup
   messages = await loadMessagesFromSupabase();
