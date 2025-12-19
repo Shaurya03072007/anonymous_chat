@@ -1,4 +1,5 @@
--- Supabase Database Schema for Anonymous Chat App
+-- Supabase Database Schema for Anonymous Chat App (Safe Version)
+-- This version can be run multiple times without errors
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -12,10 +13,8 @@ CREATE TABLE IF NOT EXISTS messages (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Create index on created_at for faster queries
+-- Create indexes (will skip if already exist)
 CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at DESC);
-
--- Create index on sender for faster queries
 CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender);
 
 -- Function to update updated_at timestamp
@@ -27,10 +26,8 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
--- Drop trigger if it exists, then create it
+-- Drop trigger if exists, then create
 DROP TRIGGER IF EXISTS update_messages_updated_at ON messages;
-
--- Trigger to auto-update updated_at
 CREATE TRIGGER update_messages_updated_at 
   BEFORE UPDATE ON messages 
   FOR EACH ROW 
@@ -39,34 +36,31 @@ CREATE TRIGGER update_messages_updated_at
 -- Enable Row Level Security (RLS)
 ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
 
--- Drop existing policies if they exist, then create them
+-- Drop existing policies if they exist
 DROP POLICY IF EXISTS "Allow public read access" ON messages;
 DROP POLICY IF EXISTS "Allow public insert access" ON messages;
 DROP POLICY IF EXISTS "Allow public update access" ON messages;
 DROP POLICY IF EXISTS "Allow public delete access" ON messages;
 
--- Policy: Allow anyone to read messages (public read)
+-- Create policies
 CREATE POLICY "Allow public read access" ON messages
   FOR SELECT
   USING (true);
 
--- Policy: Allow anyone to insert messages (public write)
 CREATE POLICY "Allow public insert access" ON messages
   FOR INSERT
   WITH CHECK (true);
 
--- Optional: Policy to allow updates (if needed in future)
 CREATE POLICY "Allow public update access" ON messages
   FOR UPDATE
   USING (true)
   WITH CHECK (true);
 
--- Optional: Policy to allow deletes (if needed in future)
 CREATE POLICY "Allow public delete access" ON messages
   FOR DELETE
   USING (true);
 
--- Enable Realtime for messages table (ignore error if already added)
+-- Enable Realtime for messages table (safe - won't error if already added)
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -76,5 +70,9 @@ BEGIN
   ) THEN
     ALTER PUBLICATION supabase_realtime ADD TABLE messages;
   END IF;
+EXCEPTION
+  WHEN OTHERS THEN
+    -- Ignore errors (table might already be in publication)
+    NULL;
 END $$;
 

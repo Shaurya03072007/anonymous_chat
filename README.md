@@ -27,33 +27,67 @@ whatsapp-main/
 
 - **Node.js** (v16 or higher) - [Download](https://nodejs.org/)
 - **npm** (comes with Node.js)
+- **Supabase Account** (free) - [Sign up](https://supabase.com)
 
-That's it! No database, no complex setup.
+## 🗄️ Database Setup Required
+
+This app uses **Supabase** for persistent message storage. You need to:
+
+1. **Create Supabase account** (free)
+2. **Create a project** in Supabase
+3. **Run the database schema** (see [SUPABASE_SETUP.md](SUPABASE_SETUP.md))
+4. **Set environment variables** (Supabase URL and key)
+
+**Quick Setup**: See [SUPABASE_SETUP.md](SUPABASE_SETUP.md) for detailed instructions.
 
 ## 🚀 Quick Start
 
-### Step 1: Install Dependencies
+### Step 1: Set Up Supabase Database
+
+**Important**: You must set up Supabase first!
+
+1. Follow the complete guide: [SUPABASE_SETUP.md](SUPABASE_SETUP.md)
+2. Or quick steps:
+   - Sign up at [supabase.com](https://supabase.com)
+   - Create a new project
+   - Run SQL from `supabase/schema.sql` in SQL Editor
+   - Get your URL and anon key from Settings → API
+
+### Step 2: Configure Environment Variables
+
+Create a `.env` file in the root directory:
+
+```env
+SUPABASE_URL=https://your-project-id.supabase.co
+SUPABASE_ANON_KEY=your-anon-key-here
+PORT=3000
+```
+
+### Step 3: Install Dependencies
 
 ```bash
 npm install
 ```
 
-### Step 2: Start the Server
+### Step 4: Start the Server
 
 ```bash
 npm start
 ```
 
-The server will start on **http://localhost:3000**
+The server will:
+- ✅ Connect to Supabase
+- ✅ Load all previous messages from database
+- ✅ Start on **http://localhost:3000**
 
-### Step 3: Open in Browser
+### Step 5: Open in Browser
 
-Open your browser (or any device on the same network) and navigate to:
+Open your browser and navigate to:
 ```
 http://localhost:3000
 ```
 
-**That's it!** Start chatting immediately - no registration needed.
+**That's it!** Start chatting - all messages are saved in Supabase!
 
 ## 🌐 Access from Any Device
 
@@ -106,13 +140,22 @@ If your IP is `192.168.1.100`, open `http://192.168.1.100:3000` on any device.
 
 ## 📝 How It Works
 
-1. **Anonymous Chat**: All users appear as "Unknown" - completely anonymous
-2. **File Storage**: Messages are saved to `messages.json` file
-3. **Persistent**: Messages survive server restarts
-4. **Auto-save**: Messages saved every 30 seconds
-5. **History Limit**: Keeps last 10,000 messages (configurable)
+1. **Anonymous Chat**: Users get random Indian names (saved in browser)
+2. **Database Storage**: Messages are saved to Supabase database
+3. **Persistent**: Messages survive server restarts (stored in cloud)
+4. **Real-time**: Instant message delivery via Socket.io
+5. **History**: All messages loaded from database on startup
+6. **Active Users**: Shows count of online users in header
 
 ## 🔧 Configuration
+
+### Supabase Credentials
+
+Set in `.env` file or environment variables:
+```env
+SUPABASE_URL=https://your-project-id.supabase.co
+SUPABASE_ANON_KEY=your-anon-key-here
+```
 
 ### Change Message Limit
 
@@ -121,25 +164,16 @@ Edit `chat-backend/server.js`:
 const MAX_MESSAGES = 10000; // Change this number
 ```
 
-### Change Auto-save Interval
-
-Edit `chat-backend/server.js`:
-```javascript
-setInterval(async () => {
-  await saveMessages();
-}, 30000); // Change 30000 to milliseconds (30000 = 30 seconds)
-```
-
 ### Change Port
 
-Edit `chat-backend/server.js`:
-```javascript
-const PORT = process.env.PORT || 3000; // Change 3000 to your port
-```
-
-Or set environment variable:
+Set environment variable:
 ```bash
 PORT=8080 npm start
+```
+
+Or edit `chat-backend/server.js`:
+```javascript
+const PORT = process.env.PORT || 3000;
 ```
 
 ## 📂 File Structure
@@ -147,11 +181,13 @@ PORT=8080 npm start
 ```
 whatsapp-main/
 ├── chat-backend/
-│   ├── server.js          # Main server
-│   ├── index.html         # Web client
-│   └── messages.json      # Message storage (auto-created)
+│   ├── server.js          # Main server (uses Supabase)
+│   └── index.html         # Web client
+├── supabase/
+│   └── schema.sql         # Database schema
 ├── package.json           # Dependencies
 ├── README.md              # This file
+├── SUPABASE_SETUP.md      # Supabase setup guide
 └── DEPLOYMENT.md          # Deployment guide
 ```
 
@@ -164,10 +200,10 @@ whatsapp-main/
 - Complete privacy
 
 ### Persistent Storage
-- Messages saved to `messages.json`
+- Messages saved to Supabase database
 - Survives server restarts
-- Auto-saves every 30 seconds
-- Manual save on graceful shutdown
+- All messages loaded on startup
+- Cloud-based (accessible from anywhere)
 
 ### Responsive Design
 - Works on phones, tablets, desktops
@@ -183,11 +219,24 @@ whatsapp-main/
 
 ## 🐛 Troubleshooting
 
+### "Supabase credentials not found" error?
+
+1. Create `.env` file in root directory
+2. Add `SUPABASE_URL` and `SUPABASE_ANON_KEY`
+3. Restart server
+
 ### Messages not appearing?
 
 1. Check server is running
 2. Check browser console for errors
-3. Verify WebSocket connection (check Network tab)
+3. Verify Supabase connection (check server logs)
+4. Verify messages table exists in Supabase
+
+### Messages not saving?
+
+1. Check Supabase dashboard → Table Editor
+2. Verify RLS policies are set (should allow public access)
+3. Check server logs for Supabase errors
 
 ### Can't access from mobile device?
 
@@ -195,18 +244,19 @@ whatsapp-main/
 2. Check firewall allows port 3000
 3. Use local IP address (not localhost)
 
-### Messages lost after restart?
-
-- Messages should persist (saved to `messages.json`)
-- Check file permissions
-- Check server logs for errors
-
 ### Port already in use?
 
 Change the port:
 ```bash
 PORT=8080 npm start
 ```
+
+### Database connection issues?
+
+1. Verify Supabase project is active (not paused)
+2. Check your internet connection
+3. Verify credentials in `.env` file
+4. See [SUPABASE_SETUP.md](SUPABASE_SETUP.md) for help
 
 ## 🔒 Privacy & Security
 
@@ -221,10 +271,12 @@ PORT=8080 npm start
 
 - **Backend**: Node.js + Express + Socket.io
 - **Frontend**: Vanilla HTML/CSS/JavaScript
-- **Storage**: JSON file (no database needed)
+- **Database**: Supabase (PostgreSQL)
+- **Storage**: Cloud database (Supabase)
 - **Protocol**: WebSocket for real-time communication
 - **Max Message Length**: 2000 characters
-- **Max Messages Stored**: 10,000 (configurable)
+- **Max Messages Loaded**: 10,000 (configurable)
+- **Real-time**: Socket.io for instant messaging
 
 ## 🚀 Production Deployment
 

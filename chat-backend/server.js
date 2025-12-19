@@ -3,14 +3,27 @@ const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const path = require("path");
-const fs = require("fs").promises;
+const { createClient } = require("@supabase/supabase-js");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || "development";
 
-// Message storage file
-const MESSAGES_FILE = path.join(__dirname, "messages.json");
+// Supabase configuration
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  console.error("❌ ERROR: Supabase credentials not found!");
+  console.error("Please set SUPABASE_URL and SUPABASE_ANON_KEY environment variables");
+  console.error("See SUPABASE_SETUP.md for instructions");
+  process.exit(1);
+}
+
+// Initialize Supabase client
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+console.log("✅ Supabase client initialized");
+
 const MAX_MESSAGES = 10000; // Keep last 10,000 messages
 
 // Middleware
@@ -25,48 +38,47 @@ app.use(express.urlencoded({ extended: true }));
 // Serve static files
 app.use(express.static(path.join(__dirname)));
 
-// Initialize messages storage
+// Load messages from Supabase on startup
+async function loadMessagesFromSupabase() {
+  try {
+    const { data, error } = await supabase
+      .from("messages")
+      .select("*")
+      .order("created_at", { ascending: true })
+      .limit(MAX_MESSAGES);
+
+    if (error) {
+      throw error;
+    }
+
+    // Format messages for client
+    const formattedMessages = (data || []).map((msg) => ({
+      id: msg.id,
+      text: msg.text,
+      sender: msg.sender,
+      date: new Date(msg.created_at).toLocaleDateString(),
+      time: new Date(msg.created_at).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+      timestamp: new Date(msg.created_at).getTime(),
+    }));
+
+    console.log(`✅ Loaded ${formattedMessages.length} messages from Supabase`);
+    return formattedMessages;
+  } catch (error) {
+    console.error("❌ Error loading messages from Supabase:", error);
+    return [];
+  }
+}
+
+// Store messages in memory for quick access
 let messages = [];
 
-// Load messages from file
-async function loadMessages() {
-  try {
-    const data = await fs.readFile(MESSAGES_FILE, "utf8");
-    messages = JSON.parse(data);
-    console.log(`✅ Loaded ${messages.length} messages from storage`);
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      // File doesn't exist, start with empty array
-      messages = [];
-      await saveMessages();
-      console.log("✅ Created new messages storage file");
-    } else {
-      console.error("Error loading messages:", error);
-      messages = [];
-    }
-  }
-}
-
-// Save messages to file
-async function saveMessages() {
-  try {
-    // Keep only last MAX_MESSAGES
-    if (messages.length > MAX_MESSAGES) {
-      messages = messages.slice(-MAX_MESSAGES);
-    }
-    await fs.writeFile(MESSAGES_FILE, JSON.stringify(messages, null, 2), "utf8");
-  } catch (error) {
-    console.error("Error saving messages:", error);
-  }
-}
-
-// Auto-save messages every 30 seconds
-setInterval(async () => {
-  await saveMessages();
-}, 30000);
-
 // Load messages on startup
-loadMessages();
+(async () => {
+  messages = await loadMessagesFromSupabase();
+})();
 
 // HTTP Routes
 app.get("/", (req, res) => {
@@ -76,6 +88,8 @@ app.get("/", (req, res) => {
 // Get all messages
 app.get("/api/messages", async (req, res) => {
   try {
+    // Reload from Supabase to get latest
+    messages = await loadMessagesFromSupabase();
     res.json({ messages });
   } catch (error) {
     console.error("Error getting messages:", error);
@@ -122,34 +136,49 @@ io.on("connection", (socket) => {
 
       // Sanitize message (remove excessive whitespace, limit length)
       const sanitizedText = msg.text.trim().substring(0, 2000); // Max 2000 chars
+      const senderName = msg.senderName || "Unknown";
 
+      // Insert message into Supabase
+      const { data, error } = await supabase
+        .from("messages")
+        .insert([
+          {
+            text: sanitizedText,
+            sender: senderName,
+          },
+        ])
+        .select()
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      // Format message for client
       const message = {
-        id: msg.id || `${Date.now()}-${Math.random().toString(36).substring(2, 10)}`,
-        text: sanitizedText,
-        sender: msg.senderName || "Unknown", // Use sender name from client
-        time: new Date().toLocaleTimeString([], {
+        id: data.id,
+        text: data.text,
+        sender: data.sender,
+        date: new Date(data.created_at).toLocaleDateString(),
+        time: new Date(data.created_at).toLocaleTimeString([], {
           hour: "2-digit",
           minute: "2-digit",
         }),
-        date: new Date().toLocaleDateString(),
-        timestamp: Date.now(),
+        timestamp: new Date(data.created_at).getTime(),
       };
 
-      // Add to messages array
+      // Add to in-memory cache
       messages.push(message);
 
-      // Keep only last MAX_MESSAGES
+      // Keep only last MAX_MESSAGES in memory
       if (messages.length > MAX_MESSAGES) {
         messages = messages.slice(-MAX_MESSAGES);
       }
 
-      // Save to file (async, don't wait)
-      saveMessages().catch(err => console.error("Error auto-saving:", err));
-
       // Broadcast to all connected clients
       io.emit("receive_message", message);
       
-      console.log(`📨 New message: ${sanitizedText.substring(0, 50)}...`);
+      console.log(`📨 New message from ${senderName}: ${sanitizedText.substring(0, 50)}...`);
     } catch (error) {
       console.error("Error handling message:", error);
       socket.emit("error", { message: "Failed to send message" });
@@ -173,23 +202,25 @@ process.on("unhandledRejection", (reason, promise) => {
   console.error("Unhandled Rejection at:", promise, "reason:", reason);
 });
 
-// Graceful shutdown - save messages before exit
+// Graceful shutdown
 process.on("SIGTERM", async () => {
-  console.log("SIGTERM received, saving messages...");
-  await saveMessages();
+  console.log("SIGTERM received, shutting down...");
   process.exit(0);
 });
 
 process.on("SIGINT", async () => {
-  console.log("SIGINT received, saving messages...");
-  await saveMessages();
+  console.log("SIGINT received, shutting down...");
   process.exit(0);
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
   console.log(`📱 Environment: ${NODE_ENV}`);
-  console.log(`💾 Message storage: File-based (${MESSAGES_FILE})`);
-  console.log(`📊 Current messages: ${messages.length}`);
+  console.log(`💾 Database: Supabase`);
+  console.log(`🔗 Supabase URL: ${SUPABASE_URL.substring(0, 30)}...`);
+  
+  // Load messages on startup
+  messages = await loadMessagesFromSupabase();
+  console.log(`📊 Loaded ${messages.length} messages from database`);
   console.log(`🌐 Public access: Enabled (no authentication)`);
 });

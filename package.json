@@ -1,23 +1,34 @@
 {
   "name": "whatsapp-chat-app",
-  "version": "2.0.0",
-  "description": "Real-time anonymous chat application with Supabase (PostgreSQL + Realtime)",
+  "version": "1.0.0",
+  "description": "Real-time WhatsApp-like chat application with session-based storage",
   "main": "index.js",
   "scripts": {
-    "start": "npx http-server chat-backend -p 3000 -o",
-    "dev": "npx http-server chat-backend -p 3000 -o",
-    "setup": "echo 'See SUPABASE_SETUP.md for setup instructions'"
+    "start": "node chat-backend/server.js",
+    "dev": "nodemon chat-backend/server.js",
+    "mobile": "cd chat-mobile && npm start",
+    "mobile:android": "cd chat-mobile && npm run android",
+    "mobile:ios": "cd chat-mobile && npm run ios",
+    "mobile:web": "cd chat-mobile && npm run web",
+    "install:all": "npm install && cd chat-mobile && npm install"
   },
   "keywords": [
     "chat",
     "whatsapp",
-    "supabase",
+    "socket.io",
     "real-time",
-    "postgresql",
-    "anonymous"
+    "react-native",
+    "expo"
   ],
   "author": "",
   "license": "ISC",
-  "dependencies": {},
-  "devDependencies": {}
+  "dependencies": {
+    "express": "^5.2.1",
+    "socket.io": "^4.8.1",
+    "cors": "^2.8.5",
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
+  }
 }
