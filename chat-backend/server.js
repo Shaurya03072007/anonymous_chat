@@ -105,7 +105,7 @@ function broadcastActiveUsers() {
 io.on("connection", (socket) => {
   activeUsers++;
   console.log(`✅ User connected: ${socket.id} (Total: ${activeUsers})`);
-  
+
   // Send active user count to all clients
   broadcastActiveUsers();
 
