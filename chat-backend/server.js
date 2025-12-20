@@ -27,6 +27,9 @@ console.log("✅ Supabase client initialized");
 
 const MAX_MESSAGES = 10000; // Keep last 10,000 messages
 
+// Admin secret code (10 digit alphanumeric) - HARDCODED
+const ADMIN_CODE = "ADMIN12345"; // Hardcoded admin code
+
 // Middleware
 app.use(cors({
   origin: true, // Allow all origins for public access
@@ -133,6 +136,11 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
+// Admin page route
+app.get("/admin", (req, res) => {
+  res.sendFile(path.join(__dirname, "admin.html"));
+});
+
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.json({
@@ -180,6 +188,32 @@ app.get("/api/messages", async (req, res) => {
   } catch (error) {
     console.error("Error getting messages:", error);
     res.status(500).json({ error: "Failed to get messages" });
+  }
+});
+
+// Delete message endpoint (admin only)
+app.delete("/api/messages/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    // Delete from Supabase
+    const { error } = await supabase
+      .from("messages")
+      .delete()
+      .eq("id", id);
+
+    if (error) throw error;
+
+    // Remove from memory
+    messages = messages.filter(m => m.id !== id);
+
+    // Broadcast deletion
+    io.emit("message_deleted", { messageId: id });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Error deleting message:", error);
+    res.status(500).json({ error: "Failed to delete message" });
   }
 });
 
@@ -254,9 +288,10 @@ io.on("connection", (socket) => {
 
   // Handle typing indicator
   socket.on("typing", (data) => {
+    const userName = socket.userName || socketUserName;
     if (data.isTyping) {
       typingUsers.set(socket.id, {
-        userName: socketUserName,
+        userName: userName,
         timeout: setTimeout(() => {
           typingUsers.delete(socket.id);
           broadcastTyping();
@@ -280,8 +315,20 @@ io.on("connection", (socket) => {
         return;
       }
 
+      const sanitizedText = msg.text.trim();
+      
+      // Check for admin code (10 digit alphanumeric)
+      if (sanitizedText === ADMIN_CODE) {
+        socket.emit("admin_access_granted", { 
+          success: true,
+          message: "Admin access granted. Redirecting..." 
+        });
+        console.log(`🔐 Admin access granted to: ${msg.senderName || "Unknown"}`);
+        return; // Don't send the code as a message
+      }
+
       // Sanitize message (remove excessive whitespace, limit length)
-      const sanitizedText = msg.text.trim().substring(0, 2000); // Max 2000 chars
+      const finalText = sanitizedText.substring(0, 2000); // Max 2000 chars
       const senderName = msg.senderName || "Unknown";
       const now = new Date();
 
@@ -291,7 +338,7 @@ io.on("connection", (socket) => {
       // Format message for client (sent immediately in real-time)
       const message = {
         id: tempId,
-        text: sanitizedText,
+        text: finalText,
         sender: senderName,
         date: now.toLocaleDateString(),
         time: now.toLocaleTimeString([], {
@@ -303,7 +350,7 @@ io.on("connection", (socket) => {
 
       // Add to batch for periodic saving (every 4 min 58 sec)
       messageBatch.push({
-        text: sanitizedText,
+        text: finalText,
         sender: senderName,
         tempId: tempId,
         timestamp: now,
@@ -320,7 +367,7 @@ io.on("connection", (socket) => {
       // Broadcast to all connected clients immediately (real-time)
       io.emit("receive_message", message);
       
-      console.log(`📨 New message from ${senderName}: ${sanitizedText.substring(0, 50)}... (queued for batch save)`);
+      console.log(`📨 New message from ${senderName}: ${finalText.substring(0, 50)}... (queued for batch save)`);
     } catch (error) {
       console.error("Error handling message:", error);
       socket.emit("error", { message: "Failed to send message" });
@@ -375,99 +422,6 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Handle message edit
-  socket.on("edit_message", async (data) => {
-    try {
-      const { messageId, newText, userName } = data;
-      if (!messageId || !newText || !userName) return;
-
-      // Find message in memory
-      const messageIndex = messages.findIndex((m) => m.id === messageId);
-      if (messageIndex === -1) return;
-
-      const message = messages[messageIndex];
-      if (message.sender !== userName) {
-        socket.emit("error", { message: "You can only edit your own messages" });
-        return;
-      }
-
-      // Check if within 5 minutes
-      const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
-      if (message.timestamp < fiveMinutesAgo) {
-        socket.emit("error", { message: "Messages can only be edited within 5 minutes" });
-        return;
-      }
-
-      // Update message
-      const sanitizedText = newText.trim().substring(0, 2000);
-      messages[messageIndex].text = sanitizedText;
-      messages[messageIndex].edited = true;
-      messages[messageIndex].editedAt = new Date().toISOString();
-
-      // Update in Supabase (if message is saved)
-      if (messageId.includes("-")) {
-        // Temporary ID, will update when batch saves
-      } else {
-        await supabase
-          .from("messages")
-          .update({
-            text: sanitizedText,
-            edited_at: new Date().toISOString(),
-            original_text: message.text,
-          })
-          .eq("id", messageId);
-      }
-
-      // Broadcast updated message
-      io.emit("message_edited", {
-        messageId,
-        text: sanitizedText,
-        edited: true,
-      });
-    } catch (error) {
-      console.error("Error editing message:", error);
-      socket.emit("error", { message: "Failed to edit message" });
-    }
-  });
-
-  // Handle message delete
-  socket.on("delete_message", async (data) => {
-    try {
-      const { messageId, userName } = data;
-      if (!messageId || !userName) return;
-
-      // Find message in memory
-      const messageIndex = messages.findIndex((m) => m.id === messageId);
-      if (messageIndex === -1) return;
-
-      const message = messages[messageIndex];
-      if (message.sender !== userName) {
-        socket.emit("error", { message: "You can only delete your own messages" });
-        return;
-      }
-
-      // Mark as deleted
-      messages[messageIndex].deleted = true;
-      messages[messageIndex].text = "[Message deleted]";
-
-      // Update in Supabase
-      if (!messageId.includes("-")) {
-        await supabase
-          .from("messages")
-          .update({
-            is_deleted: true,
-            deleted_at: new Date().toISOString(),
-          })
-          .eq("id", messageId);
-      }
-
-      // Broadcast deleted message
-      io.emit("message_deleted", { messageId });
-    } catch (error) {
-      console.error("Error deleting message:", error);
-      socket.emit("error", { message: "Failed to delete message" });
-    }
-  });
 
   // Handle message report
   socket.on("report_message", async (data) => {
@@ -534,6 +488,7 @@ server.listen(PORT, async () => {
   console.log(`💾 Database: Supabase`);
   console.log(`🔗 Supabase URL: ${SUPABASE_URL.substring(0, 30)}...`);
   console.log(`⏰ Batch save interval: Every 4 minutes 58 seconds`);
+  console.log(`🔐 Admin code: ${ADMIN_CODE} (hardcoded)`);
   
   // Load messages on startup
   messages = await loadMessagesFromSupabase();
