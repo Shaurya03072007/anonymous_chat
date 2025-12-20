@@ -4,6 +4,7 @@ const { Server } = require("socket.io");
 const cors = require("cors");
 const path = require("path");
 const { createClient } = require("@supabase/supabase-js");
+const rateLimit = require("express-rate-limit");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -34,6 +35,15 @@ app.use(cors({
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Rate limiting - 10 messages per minute per IP
+const messageLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 10, // 10 messages per minute
+  message: "Too many messages. Please wait a moment.",
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // Serve static files
 app.use(express.static(path.join(__dirname)));
@@ -123,15 +133,83 @@ app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    database: "connected",
+    messagesInMemory: messages.length,
+    activeUsers: activeUsers,
+    batchQueue: messageBatch.length,
+    timestamp: new Date().toISOString(),
+  });
+});
+
 // Get all messages
 app.get("/api/messages", async (req, res) => {
   try {
-    // Reload from Supabase to get latest
-    messages = await loadMessagesFromSupabase();
-    res.json({ messages });
+    const { search, sender, limit = 100 } = req.query;
+    let query = supabase.from("messages").select("*").order("created_at", { ascending: false });
+
+    if (search) {
+      query = query.ilike("text", `%${search}%`);
+    }
+    if (sender) {
+      query = query.eq("sender", sender);
+    }
+
+    const { data, error } = await query.limit(parseInt(limit));
+
+    if (error) throw error;
+
+    const formatted = (data || []).map((msg) => ({
+      id: msg.id,
+      text: msg.text,
+      sender: msg.sender,
+      date: new Date(msg.created_at).toLocaleDateString(),
+      time: new Date(msg.created_at).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+      timestamp: new Date(msg.created_at).getTime(),
+      edited: !!msg.edited_at,
+      deleted: !!msg.is_deleted,
+    }));
+
+    res.json({ messages: formatted.reverse() });
   } catch (error) {
     console.error("Error getting messages:", error);
     res.status(500).json({ error: "Failed to get messages" });
+  }
+});
+
+// Search messages endpoint
+app.get("/api/messages/search", messageLimiter, async (req, res) => {
+  try {
+    const { q, sender, startDate, endDate } = req.query;
+    let query = supabase.from("messages").select("*");
+
+    if (q) {
+      query = query.ilike("text", `%${q}%`);
+    }
+    if (sender) {
+      query = query.eq("sender", sender);
+    }
+    if (startDate) {
+      query = query.gte("created_at", startDate);
+    }
+    if (endDate) {
+      query = query.lte("created_at", endDate);
+    }
+
+    const { data, error } = await query.order("created_at", { ascending: false }).limit(100);
+
+    if (error) throw error;
+
+    res.json({ results: data || [] });
+  } catch (error) {
+    console.error("Error searching messages:", error);
+    res.status(500).json({ error: "Failed to search messages" });
   }
 });
 
@@ -149,20 +227,50 @@ const io = new Server(server, {
 // Track active users
 let activeUsers = 0;
 
+// Track typing users
+const typingUsers = new Map(); // socketId -> { userName, timeout }
+
 // Function to broadcast active user count
 function broadcastActiveUsers() {
   io.emit("active_users", activeUsers);
 }
 
+// Function to broadcast typing indicators
+function broadcastTyping() {
+  const typingList = Array.from(typingUsers.values()).map((u) => u.userName);
+  io.emit("typing_users", typingList);
+}
+
 io.on("connection", (socket) => {
   activeUsers++;
-  console.log(`✅ User connected: ${socket.id} (Total: ${activeUsers})`);
+  const socketUserName = socket.handshake.auth?.userName || "Unknown";
+  console.log(`✅ User connected: ${socket.id} (${socketUserName}) - Total: ${activeUsers}`);
 
   // Send active user count to all clients
   broadcastActiveUsers();
 
   // Send message history on connect
   socket.emit("message_history", messages);
+
+  // Handle typing indicator
+  socket.on("typing", (data) => {
+    if (data.isTyping) {
+      typingUsers.set(socket.id, {
+        userName: socketUserName,
+        timeout: setTimeout(() => {
+          typingUsers.delete(socket.id);
+          broadcastTyping();
+        }, 3000),
+      });
+    } else {
+      const typing = typingUsers.get(socket.id);
+      if (typing) {
+        clearTimeout(typing.timeout);
+        typingUsers.delete(socket.id);
+      }
+    }
+    broadcastTyping();
+  });
 
   // Handle sending messages
   socket.on("send_message", async (msg) => {
@@ -219,9 +327,180 @@ io.on("connection", (socket) => {
     }
   });
 
+  // Handle message reaction
+  socket.on("add_reaction", async (data) => {
+    try {
+      const { messageId, emoji, userName } = data;
+      if (!messageId || !emoji || !userName) return;
+
+      // Check if reaction already exists
+      const { data: existing } = await supabase
+        .from("message_reactions")
+        .select("*")
+        .eq("message_id", messageId)
+        .eq("user_name", userName)
+        .eq("emoji", emoji)
+        .single();
+
+      if (existing) {
+        // Remove reaction
+        await supabase
+          .from("message_reactions")
+          .delete()
+          .eq("id", existing.id);
+      } else {
+        // Add reaction
+        await supabase.from("message_reactions").insert([
+          {
+            message_id: messageId,
+            user_name: userName,
+            emoji: emoji,
+          },
+        ]);
+      }
+
+      // Get all reactions for this message
+      const { data: reactions } = await supabase
+        .from("message_reactions")
+        .select("*")
+        .eq("message_id", messageId);
+
+      // Broadcast updated reactions
+      io.emit("message_reactions", {
+        messageId,
+        reactions: reactions || [],
+      });
+    } catch (error) {
+      console.error("Error handling reaction:", error);
+    }
+  });
+
+  // Handle message edit
+  socket.on("edit_message", async (data) => {
+    try {
+      const { messageId, newText, userName } = data;
+      if (!messageId || !newText || !userName) return;
+
+      // Find message in memory
+      const messageIndex = messages.findIndex((m) => m.id === messageId);
+      if (messageIndex === -1) return;
+
+      const message = messages[messageIndex];
+      if (message.sender !== userName) {
+        socket.emit("error", { message: "You can only edit your own messages" });
+        return;
+      }
+
+      // Check if within 5 minutes
+      const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+      if (message.timestamp < fiveMinutesAgo) {
+        socket.emit("error", { message: "Messages can only be edited within 5 minutes" });
+        return;
+      }
+
+      // Update message
+      const sanitizedText = newText.trim().substring(0, 2000);
+      messages[messageIndex].text = sanitizedText;
+      messages[messageIndex].edited = true;
+      messages[messageIndex].editedAt = new Date().toISOString();
+
+      // Update in Supabase (if message is saved)
+      if (messageId.includes("-")) {
+        // Temporary ID, will update when batch saves
+      } else {
+        await supabase
+          .from("messages")
+          .update({
+            text: sanitizedText,
+            edited_at: new Date().toISOString(),
+            original_text: message.text,
+          })
+          .eq("id", messageId);
+      }
+
+      // Broadcast updated message
+      io.emit("message_edited", {
+        messageId,
+        text: sanitizedText,
+        edited: true,
+      });
+    } catch (error) {
+      console.error("Error editing message:", error);
+      socket.emit("error", { message: "Failed to edit message" });
+    }
+  });
+
+  // Handle message delete
+  socket.on("delete_message", async (data) => {
+    try {
+      const { messageId, userName } = data;
+      if (!messageId || !userName) return;
+
+      // Find message in memory
+      const messageIndex = messages.findIndex((m) => m.id === messageId);
+      if (messageIndex === -1) return;
+
+      const message = messages[messageIndex];
+      if (message.sender !== userName) {
+        socket.emit("error", { message: "You can only delete your own messages" });
+        return;
+      }
+
+      // Mark as deleted
+      messages[messageIndex].deleted = true;
+      messages[messageIndex].text = "[Message deleted]";
+
+      // Update in Supabase
+      if (!messageId.includes("-")) {
+        await supabase
+          .from("messages")
+          .update({
+            is_deleted: true,
+            deleted_at: new Date().toISOString(),
+          })
+          .eq("id", messageId);
+      }
+
+      // Broadcast deleted message
+      io.emit("message_deleted", { messageId });
+    } catch (error) {
+      console.error("Error deleting message:", error);
+      socket.emit("error", { message: "Failed to delete message" });
+    }
+  });
+
+  // Handle message report
+  socket.on("report_message", async (data) => {
+    try {
+      const { messageId, reason, reportedBy } = data;
+      if (!messageId || !reportedBy) return;
+
+      await supabase.from("reported_messages").insert([
+        {
+          message_id: messageId,
+          reported_by: reportedBy,
+          reason: reason || "Inappropriate content",
+        },
+      ]);
+
+      socket.emit("message_reported", { success: true });
+    } catch (error) {
+      console.error("Error reporting message:", error);
+    }
+  });
+
   // Handle disconnection
   socket.on("disconnect", () => {
     activeUsers = Math.max(0, activeUsers - 1);
+    
+    // Clean up typing indicator
+    const typing = typingUsers.get(socket.id);
+    if (typing) {
+      clearTimeout(typing.timeout);
+      typingUsers.delete(socket.id);
+      broadcastTyping();
+    }
+
     console.log(`❌ User disconnected: ${socket.id} (Total: ${activeUsers})`);
     broadcastActiveUsers();
   });
