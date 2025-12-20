@@ -64,6 +64,18 @@ async function loadMessagesFromSupabase() {
       throw error;
     }
 
+    // Get report counts
+    const { data: reports } = await supabase
+      .from("reported_messages")
+      .select("message_id");
+
+    const reportCounts = {};
+    if (reports) {
+      reports.forEach(r => {
+        reportCounts[r.message_id] = (reportCounts[r.message_id] || 0) + 1;
+      });
+    }
+
     // Format messages for client
     const formattedMessages = (data || []).map((msg) => ({
       id: msg.id,
@@ -75,6 +87,7 @@ async function loadMessagesFromSupabase() {
         minute: "2-digit",
       }),
       timestamp: new Date(msg.created_at).getTime(),
+      reportCount: reportCounts[msg.id] || 0,
     }));
 
     console.log(`✅ Loaded ${formattedMessages.length} messages from Supabase`);
@@ -153,24 +166,36 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Get all messages
+// Get all messages (database + in-memory)
 app.get("/api/messages", async (req, res) => {
   try {
-    const { search, sender, limit = 100 } = req.query;
+    const { search, sender, limit = 1000, includeMemory = "true" } = req.query;
+    
+    // Get messages from database
     let query = supabase.from("messages").select("*").order("created_at", { ascending: false });
-
     if (search) {
       query = query.ilike("text", `%${search}%`);
     }
     if (sender) {
       query = query.eq("sender", sender);
     }
-
-    const { data, error } = await query.limit(parseInt(limit));
-
+    const { data: dbMessages, error } = await query.limit(parseInt(limit));
     if (error) throw error;
 
-    const formatted = (data || []).map((msg) => ({
+    // Get report counts for all messages
+    const { data: reports } = await supabase
+      .from("reported_messages")
+      .select("message_id");
+
+    const reportCounts = {};
+    if (reports) {
+      reports.forEach(r => {
+        reportCounts[r.message_id] = (reportCounts[r.message_id] || 0) + 1;
+      });
+    }
+
+    // Format database messages
+    const formattedDb = (dbMessages || []).map((msg) => ({
       id: msg.id,
       text: msg.text,
       sender: msg.sender,
@@ -182,38 +207,102 @@ app.get("/api/messages", async (req, res) => {
       timestamp: new Date(msg.created_at).getTime(),
       edited: !!msg.edited_at,
       deleted: !!msg.is_deleted,
+      saved: true, // From database
+      reportCount: reportCounts[msg.id] || 0,
     }));
 
-    res.json({ messages: formatted.reverse() });
+    // Include in-memory messages if requested
+    let allMessages = [...formattedDb];
+    if (includeMemory === "true") {
+      // Add in-memory messages (not yet saved)
+      const memoryMessages = messages
+        .filter(msg => {
+          // Filter out messages that are already in database
+          return !formattedDb.find(dbMsg => dbMsg.id === msg.id);
+        })
+        .map(msg => ({
+          ...msg,
+          saved: false, // Not yet saved to database
+          reportCount: reportCounts[msg.id] || 0,
+        }));
+      allMessages = [...memoryMessages, ...allMessages];
+    }
+
+    // Sort by timestamp (newest first)
+    allMessages.sort((a, b) => b.timestamp - a.timestamp);
+
+    res.json({ messages: allMessages });
   } catch (error) {
     console.error("Error getting messages:", error);
     res.status(500).json({ error: "Failed to get messages" });
   }
 });
 
-// Delete message endpoint (admin only)
+// Delete message endpoint (admin only) - handles both database and memory
 app.delete("/api/messages/:id", async (req, res) => {
   try {
     const { id } = req.params;
     
-    // Delete from Supabase
-    const { error } = await supabase
-      .from("messages")
-      .delete()
-      .eq("id", id);
-
-    if (error) throw error;
+    // Check if message is in memory (unsaved)
+    const messageIndex = messages.findIndex(m => m.id === id);
+    const isInMemory = messageIndex !== -1;
+    
+    // Check if message is in batch queue
+    const batchIndex = messageBatch.findIndex(m => m.tempId === id);
+    const isInBatch = batchIndex !== -1;
 
     // Remove from memory
-    messages = messages.filter(m => m.id !== id);
+    if (isInMemory) {
+      messages.splice(messageIndex, 1);
+      console.log(`🗑️ Deleted message from memory: ${id}`);
+    }
 
-    // Broadcast deletion
+    // Remove from batch queue
+    if (isInBatch) {
+      messageBatch.splice(batchIndex, 1);
+      console.log(`🗑️ Removed message from batch queue: ${id}`);
+    }
+
+    // Try to delete from database (if it exists there)
+    // Check if it's a UUID (database ID) or temp ID
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    if (isUUID) {
+      const { error } = await supabase
+        .from("messages")
+        .delete()
+        .eq("id", id);
+
+      if (error && error.code !== 'PGRST116') { // PGRST116 = not found, which is ok
+        console.error("Error deleting from database:", error);
+      } else {
+        console.log(`🗑️ Deleted message from database: ${id}`);
+      }
+    }
+
+    // Broadcast deletion to all clients
     io.emit("message_deleted", { messageId: id });
 
-    res.json({ success: true });
+    res.json({ success: true, deletedFrom: isInMemory ? "memory" : "database" });
   } catch (error) {
     console.error("Error deleting message:", error);
     res.status(500).json({ error: "Failed to delete message" });
+  }
+});
+
+// Get all reports endpoint (admin)
+app.get("/api/reports", async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from("reported_messages")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+
+    res.json({ reports: data || [] });
+  } catch (error) {
+    console.error("Error getting reports:", error);
+    res.status(500).json({ error: "Failed to get reports" });
   }
 });
 
@@ -285,6 +374,32 @@ io.on("connection", (socket) => {
 
   // Send message history on connect
   socket.emit("message_history", messages);
+
+  // Send report counts for all messages
+  (async () => {
+    try {
+      const { data: reports } = await supabase
+        .from("reported_messages")
+        .select("message_id");
+
+      const reportCounts = {};
+      if (reports) {
+        reports.forEach(r => {
+          reportCounts[r.message_id] = (reportCounts[r.message_id] || 0) + 1;
+        });
+      }
+
+      // Send report counts for each message
+      Object.entries(reportCounts).forEach(([messageId, count]) => {
+        socket.emit("message_reports_count", {
+          messageId,
+          count,
+        });
+      });
+    } catch (error) {
+      console.error("Error loading report counts:", error);
+    }
+  })();
 
   // Handle typing indicator
   socket.on("typing", (data) => {
@@ -429,7 +544,21 @@ io.on("connection", (socket) => {
       const { messageId, reason, reportedBy } = data;
       if (!messageId || !reportedBy) return;
 
-      await supabase.from("reported_messages").insert([
+      // Check if already reported by this user
+      const { data: existing } = await supabase
+        .from("reported_messages")
+        .select("*")
+        .eq("message_id", messageId)
+        .eq("reported_by", reportedBy)
+        .single();
+
+      if (existing) {
+        socket.emit("message_reported", { success: false, message: "You already reported this message" });
+        return;
+      }
+
+      // Insert report
+      const { error } = await supabase.from("reported_messages").insert([
         {
           message_id: messageId,
           reported_by: reportedBy,
@@ -437,9 +566,25 @@ io.on("connection", (socket) => {
         },
       ]);
 
+      if (error) throw error;
+
+      // Get report count for this message
+      const { count } = await supabase
+        .from("reported_messages")
+        .select("*", { count: "exact", head: true })
+        .eq("message_id", messageId);
+
+      // Broadcast report count to all clients
+      io.emit("message_reports_count", {
+        messageId,
+        count: count || 0,
+      });
+
       socket.emit("message_reported", { success: true });
+      console.log(`🚫 Message ${messageId} reported by ${reportedBy} (Total reports: ${count})`);
     } catch (error) {
       console.error("Error reporting message:", error);
+      socket.emit("message_reported", { success: false, message: "Failed to report message" });
     }
   });
 

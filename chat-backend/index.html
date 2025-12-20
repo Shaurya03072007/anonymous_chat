@@ -658,10 +658,144 @@
       padding: 20px;
       color: #666;
     }
+
+    /* Login screen */
+    .login-screen {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+
+    .login-box {
+      background: white;
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+      max-width: 400px;
+      width: 90%;
+      text-align: center;
+    }
+
+    body.dark-mode .login-box {
+      background: #2d2d2d;
+      color: #e0e0e0;
+    }
+
+    .login-box h2 {
+      font-size: 24px;
+      margin-bottom: 10px;
+      color: #667eea;
+    }
+
+    body.dark-mode .login-box h2 {
+      color: #8a9eff;
+    }
+
+    .login-box p {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 20px;
+    }
+
+    body.dark-mode .login-box p {
+      color: #999;
+    }
+
+    .login-box input {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #ddd;
+      border-radius: 8px;
+      font-size: 16px;
+      margin-bottom: 15px;
+      outline: none;
+    }
+
+    body.dark-mode .login-box input {
+      background: #3d3d3d;
+      color: #e0e0e0;
+      border-color: #555;
+    }
+
+    .login-box input:focus {
+      border-color: #667eea;
+    }
+
+    .login-box button {
+      width: 100%;
+      padding: 12px;
+      background: #667eea;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .login-box button:hover {
+      background: #5568d3;
+    }
+
+    .login-box .warning {
+      font-size: 11px;
+      color: #ff9800;
+      margin-top: 10px;
+      font-style: italic;
+    }
+
+    body.dark-mode .login-box .warning {
+      color: #ffb74d;
+    }
+
+    /* Report button */
+    .report-btn {
+      padding: 4px 8px;
+      background: transparent;
+      border: none;
+      color: #dc3545;
+      cursor: pointer;
+      font-size: 12px;
+      border-radius: 4px;
+      transition: background 0.2s;
+    }
+
+    .report-btn:hover {
+      background: rgba(220, 53, 69, 0.1);
+    }
+
+    .message-actions .report-btn {
+      color: #dc3545;
+    }
   </style>
 </head>
 <body>
-  <div class="chat-container">
+  <!-- Login Screen -->
+  <div class="login-screen" id="loginScreen">
+    <div class="login-box">
+      <h2>💬 Join Anonymous Chat</h2>
+      <p>Enter your name to start chatting</p>
+      <input 
+        type="text" 
+        id="userNameInput" 
+        placeholder="Enter your name" 
+        maxlength="30"
+        autocomplete="off"
+      />
+      <button onclick="setUserName()">Start Chatting</button>
+      <div class="warning">⚠️ Note: This is an anonymous chat. Use your real name if you prefer.</div>
+    </div>
+  </div>
+
+  <div class="chat-container" id="chatContainer" style="display: none;">
     <div class="chat-header">
       <div class="header-left">
         <h1>💬 Anonymous Chat</h1>
@@ -729,22 +863,56 @@
       "Ganesh", "Lakshmi", "Hanuman", "Durga", "Brahma", "Parvati", "Indra", "Sita", "Yama", "Ganga"
     ];
 
-    // Get or generate user name from localStorage
+    // Get user name from localStorage or show login
     function getUserName() {
-      let userName = localStorage.getItem("chatUserName");
-      if (!userName) {
-        // Generate random Indian name
-        userName = indianNames[Math.floor(Math.random() * indianNames.length)];
-        localStorage.setItem("chatUserName", userName);
-      }
-      return userName;
+      return localStorage.getItem("chatUserName");
     }
+
+    function setUserName() {
+      const input = document.getElementById("userNameInput");
+      const userName = input.value.trim();
+      
+      if (!userName || userName.length === 0) {
+        alert("Please enter your name");
+        return;
+      }
+
+      if (userName.length > 30) {
+        alert("Name must be 30 characters or less");
+        return;
+      }
+
+      localStorage.setItem("chatUserName", userName);
+      myUserName = userName;
+      document.getElementById("loginScreen").style.display = "none";
+      document.getElementById("chatContainer").style.display = "flex";
+      
+      // Initialize socket after setting name
+      initializeSocket();
+    }
+
+    // Check if user has name, show login if not
+    let myUserName = getUserName();
+    if (!myUserName) {
+      document.getElementById("loginScreen").style.display = "flex";
+      document.getElementById("chatContainer").style.display = "none";
+    } else {
+      document.getElementById("loginScreen").style.display = "none";
+      document.getElementById("chatContainer").style.display = "flex";
+    }
+
+    // Allow Enter key in login
+    document.getElementById("userNameInput")?.addEventListener("keypress", (e) => {
+      if (e.key === "Enter") {
+        setUserName();
+      }
+    });
 
     let socket = null;
     let isConnected = false;
     let messageCount = 0;
     let activeUsersCount = 0;
-    const myUserName = getUserName();
+    let messageReports = {}; // messageId -> report count
     let darkMode = localStorage.getItem('darkMode') === 'true';
     let soundEnabled = localStorage.getItem('soundEnabled') !== 'false';
     let typingTimeout = null;
@@ -765,6 +933,11 @@
 
     // Initialize socket connection
     function initializeSocket() {
+      if (!myUserName) {
+        myUserName = getUserName();
+        if (!myUserName) return;
+      }
+
       socket = io({
         transports: ["websocket", "polling"],
         reconnection: true,
@@ -848,6 +1021,12 @@
       socket.on("message_reactions", (data) => {
         messageReactions[data.messageId] = data.reactions || [];
         updateMessageReactions(data.messageId);
+      });
+
+      // Handle message reports count
+      socket.on("message_reports_count", (data) => {
+        messageReports[data.messageId] = data.count || 0;
+        updateMessageReports(data.messageId);
       });
 
       // Handle admin access
@@ -1003,6 +1182,7 @@
         <div class="message-actions">
           <button class="action-btn" onclick="copyMessage('${msg.id}')" title="Copy">📋</button>
           <button class="action-btn" onclick="addReaction('${msg.id}')" title="React">😊</button>
+          <button class="action-btn report-btn" onclick="reportMessage('${msg.id}')" title="Report">🚫</button>
         </div>
       `;
 
@@ -1052,6 +1232,35 @@
       const emoji = prompt("Enter emoji:");
       if (emoji && emoji.trim()) {
         toggleReaction(messageId, emoji.trim());
+      }
+    }
+
+    function reportMessage(messageId) {
+      if (!confirm("Report this message as inappropriate?")) return;
+      
+      if (!socket || !isConnected) {
+        alert("Not connected to server");
+        return;
+      }
+
+      socket.emit("report_message", {
+        messageId: messageId,
+        reason: "Inappropriate content",
+        reportedBy: myUserName,
+      });
+
+      alert("Message reported. Thank you for keeping the chat safe!");
+    }
+
+    function updateMessageReports(messageId) {
+      const msgEl = document.querySelector(`[data-message-id="${messageId}"]`);
+      if (msgEl) {
+        const reportBtn = msgEl.querySelector('.report-btn');
+        const count = messageReports[messageId] || 0;
+        if (count > 0 && reportBtn) {
+          reportBtn.textContent = `🚫 (${count})`;
+          reportBtn.title = `${count} report${count > 1 ? 's' : ''}`;
+        }
       }
     }
 
@@ -1225,8 +1434,10 @@
       });
     }
 
-    // Initialize on page load
-    initializeSocket();
+    // Initialize on page load (only if user has name)
+    if (myUserName) {
+      initializeSocket();
+    }
 
     // Auto-scroll on new messages
     const observer = new MutationObserver(() => {
@@ -1235,6 +1446,15 @@
 
     observer.observe(document.getElementById("messagesContainer"), {
       childList: true,
+    });
+
+    // Handle report response
+    socket?.on("message_reported", (data) => {
+      if (data.success) {
+        // Success already shown in alert
+      } else {
+        alert(data.message || "Failed to report message");
+      }
     });
   </script>
 </body>

@@ -51,10 +51,14 @@ DROP POLICY IF EXISTS "Allow public delete reactions" ON message_reactions;
 CREATE POLICY "Allow public delete reactions" ON message_reactions
   FOR DELETE USING (true);
 
--- Policies for reported messages (public insert only)
+-- Policies for reported messages (public insert, admin read)
 DROP POLICY IF EXISTS "Allow public report messages" ON reported_messages;
 CREATE POLICY "Allow public report messages" ON reported_messages
   FOR INSERT WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public read reports" ON reported_messages;
+CREATE POLICY "Allow public read reports" ON reported_messages
+  FOR SELECT USING (true);
 
 -- Enable Realtime for reactions
 DO $$
