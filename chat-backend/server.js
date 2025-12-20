@@ -118,8 +118,10 @@ async function saveBatchToSupabase() {
     const { data, error } = await supabase
       .from("messages")
       .insert(batchToSave.map(msg => ({
-        text: msg.text,
+        text: msg.text || "",
         sender: msg.sender,
+        image: msg.image || null,
+        image_type: msg.image_type || null,
       })));
 
     if (error) {
@@ -197,7 +199,7 @@ app.get("/api/messages", async (req, res) => {
     // Format database messages
     const formattedDb = (dbMessages || []).map((msg) => ({
       id: msg.id,
-      text: msg.text,
+      text: msg.text || "",
       sender: msg.sender,
       date: new Date(msg.created_at).toLocaleDateString(),
       time: new Date(msg.created_at).toLocaleTimeString([], {
@@ -209,6 +211,8 @@ app.get("/api/messages", async (req, res) => {
       deleted: !!msg.is_deleted,
       saved: true, // From database
       reportCount: reportCounts[msg.id] || 0,
+      image: msg.image || null,
+      imageType: msg.image_type || null,
     }));
 
     // Include in-memory messages if requested
@@ -425,15 +429,19 @@ io.on("connection", (socket) => {
   // Handle sending messages
   socket.on("send_message", async (msg) => {
     try {
-      if (!msg || typeof msg.text !== "string" || msg.text.trim().length === 0) {
+      // Must have either text or image
+      const hasText = msg.text && typeof msg.text === "string" && msg.text.trim().length > 0;
+      const hasImage = msg.image && typeof msg.image === "string";
+      
+      if (!hasText && !hasImage) {
         socket.emit("error", { message: "Message cannot be empty" });
         return;
       }
 
-      const sanitizedText = msg.text.trim();
+      const sanitizedText = (msg.text || "").trim();
       
-      // Check for admin code (10 digit alphanumeric)
-      if (sanitizedText === ADMIN_CODE) {
+      // Check for admin code (10 digit alphanumeric) - only if no image
+      if (sanitizedText === ADMIN_CODE && !hasImage) {
         socket.emit("admin_access_granted", { 
           success: true,
           message: "Admin access granted. Redirecting..." 
@@ -463,13 +471,26 @@ io.on("connection", (socket) => {
         timestamp: now.getTime(),
       };
 
+      // Add image if present
+      if (hasImage) {
+        message.image = msg.image;
+        message.imageType = msg.imageType || "image/jpeg";
+      }
+
       // Add to batch for periodic saving (every 4 min 58 sec)
-      messageBatch.push({
+      const batchMessage = {
         text: finalText,
         sender: senderName,
         tempId: tempId,
         timestamp: now,
-      });
+      };
+      
+      if (hasImage) {
+        batchMessage.image = msg.image;
+        batchMessage.image_type = msg.imageType || "image/jpeg";
+      }
+      
+      messageBatch.push(batchMessage);
 
       // Add to in-memory cache
       messages.push(message);

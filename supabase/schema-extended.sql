@@ -1,12 +1,14 @@
 -- Extended Supabase Schema for Advanced Chat Features
 -- Run this AFTER the base schema.sql
 
--- Add columns to messages table for editing/deleting
+-- Add columns to messages table for editing/deleting and images
 ALTER TABLE messages 
 ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP WITH TIME ZONE,
 ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP WITH TIME ZONE,
 ADD COLUMN IF NOT EXISTS original_text TEXT,
-ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE;
+ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE,
+ADD COLUMN IF NOT EXISTS image TEXT, -- Base64 encoded optimized image
+ADD COLUMN IF NOT EXISTS image_type TEXT; -- MIME type (e.g., 'image/jpeg', 'image/png')
 
 -- Create reactions table
 CREATE TABLE IF NOT EXISTS message_reactions (
